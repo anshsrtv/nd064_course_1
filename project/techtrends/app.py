@@ -1,13 +1,16 @@
 import sqlite3
-
+import logging
+import sys
 from flask import Flask, jsonify, json, render_template, request, url_for, redirect, flash
 from werkzeug.exceptions import abort
+from werkzeug.wrappers import response
 
 # Function to get a database connection.
 # This function connects to database with the name `database.db`
 def get_db_connection():
     connection = sqlite3.connect('database.db')
     connection.row_factory = sqlite3.Row
+    app.config['db_connections'] += 1
     return connection
 
 # Function to get a post using its ID
@@ -18,9 +21,16 @@ def get_post(post_id):
     connection.close()
     return post
 
+def total_post_count():
+    connection = get_db_connection()
+    num_posts = len(connection.execute('SELECT * FROM posts').fetchall())
+    connection.close()
+    return num_posts
+
 # Define the Flask application
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your secret key'
+app.config['db_connections'] = 0
 
 # Define the main route of the web application 
 @app.route('/')
@@ -30,19 +40,54 @@ def index():
     connection.close()
     return render_template('index.html', posts=posts)
 
+@app.route('/healthz')
+def status():
+    response = app.response_class(
+        response = json.dumps({"result":"OK - healthy"}),
+        status = 200,
+        mimetype = 'application/json'
+    )
+    app.logger.info('Status request successful')
+    return response
+
+@app.route('/metrics')
+def metrics():
+    num_posts = total_post_count()
+    db_conns = app.config['db_connections']
+    response = app.response_class(
+        response = json.dumps(
+            {
+                "status":"success", 
+                "code":0, 
+                "data":{
+                    "post_count": num_posts,
+                    "db_connection_count":db_conns
+                }
+            }
+        ),
+        status = 200,
+        mimetype = 'application/json'
+    )
+    app.logger.info('Metrics request successful')
+    return response
+
 # Define how each individual article is rendered 
 # If the post ID is not found a 404 page is shown
 @app.route('/<int:post_id>')
 def post(post_id):
     post = get_post(post_id)
     if post is None:
+      app.logger.info('Article does not exist!')
       return render_template('404.html'), 404
     else:
+      title=post['title']
+      app.logger.info(f'Article "{title}" retrieved!')
       return render_template('post.html', post=post)
 
 # Define the About Us page
 @app.route('/about')
 def about():
+    app.logger.info('The "About Us" page is retrieved.')
     return render_template('about.html')
 
 # Define the post creation functionality 
@@ -60,11 +105,26 @@ def create():
                          (title, content))
             connection.commit()
             connection.close()
-
+            app.logger.info(f'Article {title} created!')
             return redirect(url_for('index'))
 
     return render_template('create.html')
 
 # start the application on port 3111
 if __name__ == "__main__":
-   app.run(host='0.0.0.0', port='3111')
+    app.run(host='0.0.0.0', port='3111', debug=True)
+    logger = logging.getLogger("__name__")
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(logging.DEBUG)
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.ERROR)
+
+    logger.addHandler(stdout_handler)
+    logger.addHandler(stderr_handler)
+
+    handlers = [stdout_handler, stderr_handler]
+
+    logging.basicConfig(level=logging.DEBUG, format='%(levelname)s:%(name)s - - %(asctime)s:%(message)s', handlers=handlers)
+    app.run(host='0.0.0.0', port='3111')
